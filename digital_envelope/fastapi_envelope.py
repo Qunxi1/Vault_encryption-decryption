@@ -72,7 +72,6 @@ def encrypt_large_file(dek: bytes, plaintext: bytes) -> bytes:
     return nonce + ciphertext
 
 # ---------- API ----------
-@app.post("/envelope/encrypt")
 '''示例
 # 加密生成数字信封
 curl -X POST http://localhost:5000/envelope/encrypt \
@@ -81,6 +80,7 @@ curl -X POST http://localhost:5000/envelope/encrypt \
   -F "asym_key_name=my-rsa-key" \
   --output digital_envelope.zip
 '''
+@app.post("/envelope/encrypt")
 async def encrypt_envelope(
     file: UploadFile = File(...),
     sym_key_name: str = Form(...),
@@ -122,7 +122,6 @@ async def encrypt_envelope(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
 
-@app.post("/envelope/decrypt")
 '''示例
 curl -X POST http://localhost:5000/envelope/decrypt \
   -F "encrypted_key=@encrypted_key.txt" \
@@ -130,6 +129,7 @@ curl -X POST http://localhost:5000/envelope/decrypt \
   -F "encrypted_file=@data.bin" \
   --output recovered_file.bin
 '''
+@app.post("/envelope/decrypt")
 async def decrypt_envelope(
     encrypted_key: UploadFile = File(...),        # 加密后的DEK
     asym_key_name: str = Form(...),              # RSA密钥名
