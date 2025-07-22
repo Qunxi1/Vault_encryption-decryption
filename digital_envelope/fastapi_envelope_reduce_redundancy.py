@@ -3,6 +3,8 @@ from fastapi.responses import StreamingResponse
 import requests, base64, io, os, zipfile, secrets, json
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from config import VAULT_ADDR, VAULT_TOKEN
+import subprocess
+import tempfile
 # 调试包
 import traceback
 
@@ -29,15 +31,56 @@ def datakey_plain(sym_key_name: str):
     # Vault 返回的 plaintext 是 base64 编码过的，要解码成真正的 bytes 密钥
     return base64.b64decode(data["plaintext"]), data["ciphertext"]
 
-# ---------- 本地加密 ----------
+# ---------- Luks加密 ----------
 def encrypt_large_file(dek: bytes, plaintext: bytes) -> bytes:
-    """AES‑GCM；返回 nonce + 密文（含 tag）"""
-    aesgcm = AESGCM(dek)
-    # 96bit的随机数，每次加密必须用不同的nonce(GCM模式要求)
-    nonce = os.urandom(12)  # 96‑bit
-    # 返回加密内容和校验信息的密文
-    ciphertext = aesgcm.encrypt(nonce, plaintext, None)
-    return nonce + ciphertext
+    """
+    使用 LUKS 加密大文件，返回 LUKS 容器内容（二进制）
+    需要系统支持 cryptsetup，且权限允许。
+    """
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        plain_path = os.path.join(tmpdir, "plain_data.bin")
+        luks_path = os.path.join(tmpdir, "luks_container.img")
+
+        # 写入明文到临时文件
+        with open(plain_path, "wb") as f:
+            f.write(plaintext)
+
+        # 创建一个空的容器文件（大于明文一点）
+        # 目前只留了16MB，治标不治本，需要了解luks额外开销和加密开销后，确定具体倍数和预留空间
+        luks_size = ((len(plaintext) + (16 * 1024 * 1024 - 1)) // (16 * 1024 * 1024) + 1) * (16 * 1024 * 1024)
+
+        with open(luks_path, "wb") as f:
+            f.truncate(luks_size)
+
+        # 创建 LUKS 容器
+        # 读入密钥
+        try:
+            subprocess.run([
+                "cryptsetup", "luksFormat", luks_path,
+                "--batch-mode", "--type", "luks2", "--key-file", "-"
+            ], input=dek, check=True)
+
+            # 打开 LUKS 容器（映射为 loop）
+            # luks_tmp为映射的设备名
+            subprocess.run([
+                "cryptsetup", "open", luks_path, "luks_tmp", "--key-file", "-"
+            ], input=dek, check=True)
+
+            # 写入明文数据到映射的 luks_tmp 设备，并加密，块为1MB
+            subprocess.run(["dd", f"if={plain_path}", "of=/dev/mapper/luks_tmp", "bs=1M"], check=True)
+
+            # 关闭映射
+            subprocess.run(["cryptsetup", "close", "luks_tmp"], check=True)
+
+            # 读取加密后的 LUKS 容器内容
+            with open(luks_path, "rb") as f:
+                encrypted = f.read()
+
+            return encrypted
+
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"LUKS 加密失败: {e}")
 
 # ---------- API ----------
 '''示例
@@ -104,19 +147,33 @@ async def decrypt_envelope(
         plaintext_dek_b64 = resp.json()["data"]["plaintext"]
         plaintext_dek = base64.b64decode(plaintext_dek_b64)
 
-        # 3. 获取密文文件内容
-        enc_file = await encrypted_file.read()
-        nonce = enc_file[:12]
-        ciphertext = enc_file[12:]
+        # 3. 保存密文（LUKS 容器）到临时文件
+        with tempfile.TemporaryDirectory() as tmpdir:
+            luks_path = os.path.join(tmpdir, "luks_container.img")
+            plain_path = os.path.join(tmpdir, "decrypted_output.bin")
 
-        # 4. 用明文 DEK 解密文件
-        aesgcm = AESGCM(plaintext_dek)
-        try:
-            decrypted_data = aesgcm.decrypt(nonce, ciphertext, None)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"AES解密失败: {str(e)}")
+            # 读入密文
+            with open(luks_path, "wb") as f:
+                f.write(await encrypted_file.read())
 
-        # 5. 返回解密后的大文件
+            # 打开 LUKS 容器
+            subprocess.run([
+                "cryptsetup", "open", luks_path, "luks_tmp", "--key-file", "-"
+            ], input=plaintext_dek, check=True)
+
+            # 从挂载设备中提取明文数据
+            subprocess.run([
+                "dd", "if=/dev/mapper/luks_tmp", f"of={plain_path}", "bs=1M"
+            ], check=True)
+
+            # 关闭映射
+            subprocess.run(["cryptsetup", "close", "luks_tmp"], check=True)
+
+            # 读取解密后的明文数据
+            with open(plain_path, "rb") as f:
+                    decrypted_data = f.read()
+
+        # 4. 返回解密后的大文件
         return StreamingResponse(io.BytesIO(decrypted_data),
                                  media_type="application/octet-stream",
                                  headers={"Content-Disposition": "attachment; filename=decrypted_data.bin"})
