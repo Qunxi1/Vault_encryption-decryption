@@ -116,7 +116,7 @@ async def decrypt_envelope(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"AES解密失败: {str(e)}")
 
-        # 6. 返回解密后的大文件
+        # 5. 返回解密后的大文件
         return StreamingResponse(io.BytesIO(decrypted_data),
                                  media_type="application/octet-stream",
                                  headers={"Content-Disposition": "attachment; filename=decrypted_data.bin"})
