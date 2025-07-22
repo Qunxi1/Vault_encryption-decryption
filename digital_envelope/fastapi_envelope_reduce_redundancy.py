@@ -64,7 +64,7 @@ async def encrypt_envelope(
         raw = await file.read()
         cipher_file = encrypt_large_file(plaintext_dek, raw)
 
-        # 6. 打包数字信封
+        # 4. 打包数字信封
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("data.bin", cipher_file)
@@ -96,7 +96,7 @@ async def decrypt_envelope(
         # 1. 获取加密后的对称密钥
         encrypted_dek = (await encrypted_key.read()).decode()
 
-        # 2. 用 Vault 的 RSA 私钥解密出明文 DEK
+        # 2. 解密出明文 DEK
         url = f"{VAULT_ADDR}/v1/{VAULT_TRANSIT_PATH}/decrypt/{key_name}"
         resp = requests.post(url, headers=HEADERS, json={"ciphertext": encrypted_dek})
         if resp.status_code != 200:
