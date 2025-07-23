@@ -32,55 +32,68 @@ def datakey_plain(sym_key_name: str):
     return base64.b64decode(data["plaintext"]), data["ciphertext"]
 
 # ---------- Luks加密 ----------
-def encrypt_large_file(dek: bytes, plaintext: bytes) -> bytes:
+def encrypt_large_file(dek: bytes, plaintext: bytes):
     """
-    使用 LUKS 加密大文件，返回 LUKS 容器内容（二进制）
-    需要系统支持 cryptsetup，且权限允许。
+    使用 LUKS 加密大文件，返回密文和独立的 header
     """
-
     with tempfile.TemporaryDirectory() as tmpdir:
         plain_path = os.path.join(tmpdir, "plain_data.bin")
-        luks_path = os.path.join(tmpdir, "luks_container.img")
+        luks_data_path = os.path.join(tmpdir, "luks_data.img")
+        luks_header_path = os.path.join(tmpdir, "luks_header.bin")
 
-        # 写入明文到临时文件
+        # 保存明文文件
         with open(plain_path, "wb") as f:
             f.write(plaintext)
 
-        # 创建一个空的容器文件（大于明文一点）
-        # 目前只留了16MB，治标不治本，需要了解luks额外开销和加密开销后，确定具体倍数和预留空间
-        luks_size = ((len(plaintext) + (16 * 1024 * 1024 - 1)) // (16 * 1024 * 1024) + 1) * (16 * 1024 * 1024)
+        # 创建与明文等长的密文容器，+手动补齐512字节对齐
+        remainder = len(plaintext) % 512
+        if remainder != 0:
+            padding = 512 - remainder
+        else:
+            padding = 0
 
-        with open(luks_path, "wb") as f:
-            f.truncate(luks_size)
+        # 创建与明文等长的密文容器
+        with open(luks_data_path, "wb") as f:
+            f.write(b"\x00" * (len(plaintext) + padding))
 
-        # 创建 LUKS 容器
-        # 读入密钥
+        # 创建loop设备
+        losetup = subprocess.run(["losetup", "--find", "--show", luks_data_path],
+                                 stdout=subprocess.PIPE, check=True, text=True)
+        loop_device = losetup.stdout.strip()
+
         try:
+            # luksFormat
             subprocess.run([
-                "cryptsetup", "luksFormat", luks_path,
-                "--batch-mode", "--type", "luks2", "--key-file", "-"
+                "cryptsetup", "luksFormat",
+                "--type", "luks2",
+                "--header", luks_header_path,
+                "--batch-mode",
+                loop_device,
+                "--key-file", "-"
             ], input=dek, check=True)
 
-            # 打开 LUKS 容器（映射为 loop）
-            # luks_tmp为映射的设备名
+            # 打开 luks 快设备
             subprocess.run([
-                "cryptsetup", "open", luks_path, "luks_tmp", "--key-file", "-"
+                "cryptsetup", "open",
+                "--header", luks_header_path,
+                loop_device, "luks_tmp",
+                "--key-file", "-"
             ], input=dek, check=True)
 
-            # 写入明文数据到映射的 luks_tmp 设备，并加密，块为1MB
-            subprocess.run(["dd", f"if={plain_path}", "of=/dev/mapper/luks_tmp", "bs=1M"], check=True)
+            # 写入明文
+            subprocess.run(["dd", f"if={plain_path}", "of=/dev/mapper/luks_tmp", "bs=1M", "status=none"], check=True)
 
-            # 关闭映射
             subprocess.run(["cryptsetup", "close", "luks_tmp"], check=True)
 
-            # 读取加密后的 LUKS 容器内容
-            with open(luks_path, "rb") as f:
-                encrypted = f.read()
+            with open(luks_data_path, "rb") as f:
+                encrypted_data = f.read()
+            with open(luks_header_path, "rb") as f:
+                header_data = f.read()
 
-            return encrypted
+            return encrypted_data, header_data
 
-        except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"LUKS 加密失败: {e}")
+        finally:
+            subprocess.run(["losetup", "-d", loop_device], check=False)
 
 # ---------- API ----------
 '''示例
@@ -105,12 +118,13 @@ async def encrypt_envelope(
         # 3. 大文件加密
         # 因fastapi是异步框架，而大文件读取可能会花费很多时间，为不阻塞整个线程，加await
         raw = await file.read()
-        cipher_file = encrypt_large_file(plaintext_dek, raw)
+        cipher_file, header_data = encrypt_large_file(plaintext_dek, raw)
 
         # 4. 打包数字信封
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("data.bin", cipher_file)
+            z.writestr("luks_header.bin", header_data)
             z.writestr("encrypted_key.txt", ciphertext_dek)
             z.writestr("key_name.txt", sym_key_name)
         buf.seek(0)
@@ -125,15 +139,17 @@ async def encrypt_envelope(
 '''示例
 curl -X POST http://localhost:5000/envelope/decrypt \
   -F "encrypted_key=@encrypted_key.txt" \
-  -F "key_name=my-rsa-key" \
+  -F "key_name=my-sym-key" \
   -F "encrypted_file=@data.bin" \
+  -F "luks_header=@luks_header.bin" \
   --output recovered_file.bin
 '''
 @app.post("/envelope/decrypt")
 async def decrypt_envelope(
     encrypted_key: UploadFile = File(...),        # 加密后的DEK
-    key_name: str = Form(...),              # 密钥名
+    key_name: str = Form(...),              # 根密钥名
     encrypted_file: UploadFile = File(...),      # data.bin
+    luks_header: UploadFile = File(...),         # luks_header.bin
 ):
     try:
         # 1. 获取加密后的对称密钥
@@ -149,29 +165,28 @@ async def decrypt_envelope(
 
         # 3. 保存密文（LUKS 容器）到临时文件
         with tempfile.TemporaryDirectory() as tmpdir:
-            luks_path = os.path.join(tmpdir, "luks_container.img")
-            plain_path = os.path.join(tmpdir, "decrypted_output.bin")
+            luks_data_path = os.path.join(tmpdir, "data.img")
+            luks_header_path = os.path.join(tmpdir, "header.bin")
+            plain_path = os.path.join(tmpdir, "recovered_output.bin")
 
-            # 读入密文
-            with open(luks_path, "wb") as f:
+            with open(luks_data_path, "wb") as f:
                 f.write(await encrypted_file.read())
+            with open(luks_header_path, "wb") as f:
+                f.write(await luks_header.read())
 
-            # 打开 LUKS 容器
             subprocess.run([
-                "cryptsetup", "open", luks_path, "luks_tmp", "--key-file", "-"
+                "cryptsetup", "open",
+                "--header", luks_header_path,
+                luks_data_path, "luks_tmp",
+                "--key-file", "-"
             ], input=plaintext_dek, check=True)
 
-            # 从挂载设备中提取明文数据
-            subprocess.run([
-                "dd", "if=/dev/mapper/luks_tmp", f"of={plain_path}", "bs=1M"
-            ], check=True)
+            subprocess.run(["dd", f"if=/dev/mapper/luks_tmp", f"of={plain_path}", "bs=1M"], check=True)
 
-            # 关闭映射
             subprocess.run(["cryptsetup", "close", "luks_tmp"], check=True)
 
-            # 读取解密后的明文数据
             with open(plain_path, "rb") as f:
-                    decrypted_data = f.read()
+                decrypted_data = f.read()
 
         # 4. 返回解密后的大文件
         return StreamingResponse(io.BytesIO(decrypted_data),
