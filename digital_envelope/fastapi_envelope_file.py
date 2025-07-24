@@ -41,10 +41,11 @@ def encrypt_large_file(dek: bytes, plaintext: bytes):
         luks_data_path = os.path.join(tmpdir, "luks_data.img")
         luks_header_path = os.path.join(tmpdir, "luks_header.bin")
 
-        # 保存明文文件
+        # 保存明文文件并计算文件实际大小
         with open(plain_path, "wb") as f:
             f.write(plaintext)
-        
+        file_size = len(plaintext)
+
         # 创建与明文等长的密文块设备，并手动512字节对齐
         remainder = len(plaintext) % 512
         if remainder != 0:
