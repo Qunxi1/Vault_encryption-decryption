@@ -47,14 +47,14 @@ def encrypt_large_file(dek: bytes, plaintext: bytes):
         file_size = len(plaintext)
 
         # 创建与明文等长的密文块设备，并手动512字节对齐
-        remainder = len(plaintext) % 512
+        remainder = file_size % 512
         if remainder != 0:
             padding = 512 - remainder
         else:
             padding = 0
 
         with open(luks_data_path, "wb") as f:
-            f.write(b"\x00" * (len(plaintext) + padding))
+            f.write(b"\x00" * (file_size + padding))
 
         # 1. 初始化 luksFormat，直接作用于文件
         subprocess.run([
@@ -86,6 +86,8 @@ def encrypt_large_file(dek: bytes, plaintext: bytes):
         with open(luks_header_path, "rb") as f:
             header_data = f.read()
 
+        # 使用 int.to_bytes() 写入前 8 字节表示明文长度（大端）
+        encrypted_data = file_size.to_bytes(8, byteorder="big") + encrypted_data
         return encrypted_data, header_data
 
 # ---------- API ----------
@@ -145,10 +147,10 @@ async def decrypt_envelope(
     luks_header: UploadFile = File(...),         # luks_header.bin
 ):
     try:
-        # 1. 获取加密后的对称密钥
+        # 获取加密后的对称密钥
         encrypted_dek = (await encrypted_key.read()).decode()
 
-        # 2. 解密出明文 DEK
+        # 解密出明文 DEK
         url = f"{VAULT_ADDR}/v1/{VAULT_TRANSIT_PATH}/decrypt/{key_name}"
         resp = requests.post(url, headers=HEADERS, json={"ciphertext": encrypted_dek})
         if resp.status_code != 200:
@@ -156,14 +158,20 @@ async def decrypt_envelope(
         plaintext_dek_b64 = resp.json()["data"]["plaintext"]
         plaintext_dek = base64.b64decode(plaintext_dek_b64)
 
-        # 3. 保存密文（LUKS 块设备）到临时文件
+        # 保存密文（LUKS 块设备）到临时文件
         with tempfile.TemporaryDirectory() as tmpdir:
             luks_data_path = os.path.join(tmpdir, "data.img")
             luks_header_path = os.path.join(tmpdir, "header.bin")
             plain_path = os.path.join(tmpdir, "recovered_output.bin")
 
+            # 提取文件实际大小和密文
+            encrypted_content = await encrypted_file.read()
+            # 提取前8字节为明文大小（大端）
+            file_size = int.from_bytes(encrypted_content[:8], byteorder="big")
+            # 提取真正的密文部分
+            ciphertext = encrypted_content[8:]
             with open(luks_data_path, "wb") as f:
-                f.write(await encrypted_file.read())
+                f.write(ciphertext)
             with open(luks_header_path, "wb") as f:
                 f.write(await luks_header.read())
 
@@ -179,9 +187,9 @@ async def decrypt_envelope(
             subprocess.run(["cryptsetup", "close", "luks_tmp"], check=True)
 
             with open(plain_path, "rb") as f:
-                decrypted_data = f.read()
+                decrypted_data = f.read(file_size)
 
-        # 4. 返回解密后的大文件
+        # 返回解密后的大文件
         return StreamingResponse(io.BytesIO(decrypted_data),
                                  media_type="application/octet-stream",
                                  headers={"Content-Disposition": "attachment; filename=decrypted_data.bin"})
