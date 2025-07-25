@@ -1,7 +1,6 @@
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.responses import StreamingResponse
-import requests, base64, io, os, zipfile, secrets, json
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import requests, base64, io, os, zipfile
 from config import VAULT_ADDR, VAULT_TOKEN
 import subprocess
 import tempfile
@@ -197,3 +196,4 @@ async def decrypt_envelope(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
+        
