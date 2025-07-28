@@ -109,12 +109,13 @@ def write_summary(client_id: str):
 
 
 # 向一个审批服务器发送请求
-async def send_approval(server_url: str, client_id: str, content: str):
+async def send_approval(server_url: str, client_id: str, content: str, base_apiurl: str):
     try:
         async with httpx.AsyncClient() as client:
             await client.post(server_url, json={
                 "client_id": client_id,
-                "content": content
+                "content": content,
+                "base_apiurl": base_apiurl
             })
     except Exception as e:
         print(f"Error contacting {server_url}: {e}")
@@ -138,9 +139,10 @@ curl -X POST http://127.0.0.1:8000/start_approval \
 async def start_approval(
 	req: ApprovalRequest, 
 	background_tasks: BackgroundTasks,
+    request: Request,
 ):
-    url_count = len(req.server_urls)
     # 往主表插入任务信息
+    url_count = len(req.server_urls)
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
@@ -148,6 +150,8 @@ async def start_approval(
         VALUES (?, ?, 0)
     ''', (req.client_id, url_count))
 
+    # 获取当前服务器的fastapi的服务地址
+    base_apiurl = str(request.base_url)
     # 并发通知所有审批服务器
     for url in req.server_urls:
         # 往子表插入审批服务器信息
@@ -156,7 +160,7 @@ async def start_approval(
             VALUES (?, ?)
         ''', (req.client_id, url))
         full_url = url + "/approval"
-        background_tasks.add_task(send_approval, full_url, req.client_id, req.content)
+        background_tasks.add_task(send_approval, full_url, req.client_id, req.content, base_apiurl)
     conn.commit()
     conn.close()
     return {"status": "sent", "message": f"已向 {url_count} 个服务器发出审批请求"}
