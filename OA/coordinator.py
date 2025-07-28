@@ -10,7 +10,6 @@ app = FastAPI()
 
 # SQLite 文件路径（协调器本地）
 DB_PATH = "./approval_results.db"
-RESULT_TEXT_PATH = "./final_results.txt"
 
 # 初始化数据库
 def init_db():
@@ -19,11 +18,20 @@ def init_db():
     # 建立approvals表
     c.execute('''
         CREATE TABLE IF NOT EXISTS approvals (
+            client_id TEXT PRIMARY KEY,
+            total_count int,
+            receive_count int,
+            final_result TEXT
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS approval_results (
             client_id TEXT,
             server_url TEXT,
             result TEXT,
-            url_count INTEGER
-        )
+            PRIMARY KEY (client_id, server_url),
+            FOREIGN KEY(client_id) REFERENCES approval_tasks(client_id)
+        );
     ''')
     conn.commit()
     conn.close()
@@ -40,16 +48,20 @@ class ApprovalResult(BaseModel):
     client_id: str
     server_url: str
     result: str  # "yes" or "no"
-    url_count: int
 
 # 保存审批结果
-def save_approval_result(client_id: str, server_url: str, result: str, url_count: int):
+def save_approval_result(client_id: str, server_url: str, result: str):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO approvals (client_id, server_url, result)
+        INSERT INTO approval_results (client_id, server_url, result)
         VALUES (?, ?, ?)
-    ''', (client_id, server_url, result, url_count))
+    ''', (client_id, server_url, result))
+    c.execute('''
+        UPDATE approvals
+        SET receive_count = receive_count + 1
+        WHERE client_id = ?
+    ''', (client_id,))
     conn.commit()
     conn.close()
 
@@ -58,34 +70,51 @@ def get_results_by_client(client_id: str) -> List[Dict]:
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
-        SELECT server_url, result FROM approvals WHERE client_id = ?
+        SELECT server_url, result FROM approval_results WHERE client_id = ?
     ''', (client_id,))
     rows = c.fetchall()
     conn.close()
     return [{"server_url": row[0], "result": row[1]} for row in rows]
 
 # 判断是否收齐所有审批
-def is_all_approved(client_id: str, expected_count: int) -> bool:
-    results = get_results_by_client(client_id)
-    return len(results) >= expected_count
+def is_all_approved(client_id: str) -> bool:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        SELECT total_count, receive_count FROM approvals WHERE client_id = ?
+    ''', (client_id,))
+    row = c.fetchone()
+    conn.close()
+    total_count, receive_count = row
+    return total_count == receive_count
 
-# 汇总结果并写入文本
+# 汇总结果并写入数据库
 def write_summary(client_id: str):
     results = get_results_by_client(client_id)
-    with open(RESULT_TEXT_PATH, "a") as f:
-        f.write(f"审批结果 for client_id={client_id}:\n")
-        for item in results:
-            f.write(f"{item['server_url']}: {item['result']}\n")
-        f.write("\n")
+    final_result = "yes"
+    for item in results:
+        if item['result'] == "no":
+            final_result = "no"
+            break
+    # 将结果写入数据库
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        UPDATE approvals
+        SET final_result = ?
+        WHERE client_id = ?
+    ''', (final_result, client_id))
+    conn.commit()
+    conn.close()
+
 
 # 向一个审批服务器发送请求
-async def send_approval(server_url: str, client_id: str, content: str, url_count: int):
+async def send_approval(server_url: str, client_id: str, content: str):
     try:
         async with httpx.AsyncClient() as client:
             await client.post(server_url, json={
                 "client_id": client_id,
-                "content": content,
-                "url_count": url_count
+                "content": content
             })
     except Exception as e:
         print(f"Error contacting {server_url}: {e}")
@@ -97,9 +126,9 @@ curl -X POST http://127.0.0.1:8000/start_approval \
   -d '{
     "client_id": "client_001",
     "server_urls": [
-      "http://127.0.0.1:9001/approval",
-      "http://127.0.0.1:9002/approval",
-      "http://127.0.0.1:9003/approval"
+      "http://127.0.0.1:9001",
+      "http://127.0.0.1:9002",
+      "http://127.0.0.1:9003"
     ],
     "content": "申请访问内部系统"
   }'
@@ -111,9 +140,25 @@ async def start_approval(
 	background_tasks: BackgroundTasks,
 ):
     url_count = len(req.server_urls)
+    # 往主表插入任务信息
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        INSERT INTO approvals (client_id, total_count, receive_count)
+        VALUES (?, ?, 0)
+    ''', (req.client_id, url_count))
+
     # 并发通知所有审批服务器
     for url in req.server_urls:
-        background_tasks.add_task(send_approval, url, req.client_id, req.content, url_count)
+        # 往子表插入审批服务器信息
+        c.execute('''
+            INSERT INTO approval_results (client_id, server_url)
+            VALUES (?, ?)
+        ''', (req.client_id, url))
+        full_url = url + "/approval"
+        background_tasks.add_task(send_approval, full_url, req.client_id, req.content)
+    conn.commit()
+    conn.close()
     return {"status": "sent", "message": f"已向 {url_count} 个服务器发出审批请求"}
 
 '''示例
@@ -121,9 +166,8 @@ curl -X POST http://192.168.216.128:5000/receive_result \
   -H "Content-Type: application/json" \
   -d '{ 
     "client_id": "client_001",
-    "server_url": "http://192.168.216.129:9001/approval",
-    "result": "yes",
-    "url_count": 3
+    "server_url": "http://192.168.216.129:9001",
+    "result": "yes"
     }'
 '''
 
@@ -132,25 +176,25 @@ curl -X POST http://192.168.216.128:5000/receive_result \
 async def receive_result(
 	result: ApprovalResult,
 ):
-    save_approval_result(result.client_id, result.server_url, result.result, result.url_count)
+    save_approval_result(result.client_id, result.server_url, result.result)
 
-    # 判断是否收齐全部结果（需要知道期望数，可简化为硬编码或另存表）
-    if is_all_approved(result.client_id, result.url_count):
+    # 判断是否收齐全部结果（并将最终结果写入数据库）
+    if is_all_approved(result.client_id):
         write_summary(result.client_id)
 
     return {"status": "ok"}
 
 # 客户端主动查询结果（可选）
 '''示例
-curl -X POST http://127.0.0.1:8000/receive_result \
-  -H "Content-Type: application/json" \
-  -d '{
-    "client_id": "client_001",
-    "server_url": "http://127.0.0.1:9001/approval",
-    "result": "yes"
-  }'
+curl -X GET http://127.0.0.1:8000/get_results/client_001
 '''
 @app.get("/get_results/{client_id}")
 def get_results(client_id: str):
-    results = get_results_by_client(client_id)
-    return {"client_id": client_id, "results": results}
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        SELECT final_result FROM approvals WHERE client_id = ?
+    ''', (client_id,))
+    result = c.fetchone()
+    conn.close()
+    return {"client_id": client_id, "results": result}
