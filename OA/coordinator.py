@@ -22,7 +22,7 @@ def init_db():
             client_id TEXT,
             server_url TEXT,
             result TEXT,
-            timestart TEXT
+            url_count INTEGER
         )
     ''')
     conn.commit()
@@ -40,15 +40,16 @@ class ApprovalResult(BaseModel):
     client_id: str
     server_url: str
     result: str  # "yes" or "no"
+    url_count: int
 
 # 保存审批结果
-def save_approval_result(client_id: str, server_url: str, result: str):
+def save_approval_result(client_id: str, server_url: str, result: str, url_count: int):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
         INSERT INTO approvals (client_id, server_url, result)
         VALUES (?, ?, ?)
-    ''', (client_id, server_url, result))
+    ''', (client_id, server_url, result, url_count))
     conn.commit()
     conn.close()
 
@@ -78,42 +79,77 @@ def write_summary(client_id: str):
         f.write("\n")
 
 # 向一个审批服务器发送请求
-async def send_approval(server_url: str, client_id: str, content: str):
+async def send_approval(server_url: str, client_id: str, content: str, url_count: int):
     try:
         async with httpx.AsyncClient() as client:
             await client.post(server_url, json={
                 "client_id": client_id,
-                "content": content
+                "content": content,
+                "url_count": url_count
             })
     except Exception as e:
         print(f"Error contacting {server_url}: {e}")
 
 # 主审批请求入口
+'''示例
+curl -X POST http://127.0.0.1:8000/start_approval \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_id": "client_001",
+    "server_urls": [
+      "http://127.0.0.1:9001/approval",
+      "http://127.0.0.1:9002/approval",
+      "http://127.0.0.1:9003/approval"
+    ],
+    "content": "申请访问内部系统"
+  }'
+
+'''
 @app.post("/start_approval")
 async def start_approval(
 	req: ApprovalRequest, 
 	background_tasks: BackgroundTasks,
 ):
+    url_count = len(req.server_urls)
     # 并发通知所有审批服务器
     for url in req.server_urls:
-        background_tasks.add_task(send_approval, url, req.client_id, req.content)
-    return {"status": "sent", "message": f"已向 {len(req.server_urls)} 个服务器发出审批请求"}
+        background_tasks.add_task(send_approval, url, req.client_id, req.content, url_count)
+    return {"status": "sent", "message": f"已向 {url_count} 个服务器发出审批请求"}
+
+'''示例
+curl -X POST http://192.168.216.128:5000/receive_result \
+  -H "Content-Type: application/json" \
+  -d '{ 
+    "client_id": "client_001",
+    "server_url": "http://192.168.216.129:9001/approval",
+    "result": "yes",
+    "url_count": 3
+    }'
+'''
 
 # 接收审批服务器返回的结果
 @app.post("/receive_result")
 async def receive_result(
 	result: ApprovalResult,
 ):
-    save_approval_result(result.client_id, result.server_url, result.result)
+    save_approval_result(result.client_id, result.server_url, result.result, result.url_count)
 
     # 判断是否收齐全部结果（需要知道期望数，可简化为硬编码或另存表）
-    expected_count = 1  # 你也可以做成可配置项或另存一张表
-    if is_all_approved(result.client_id, expected_count):
+    if is_all_approved(result.client_id, result.url_count):
         write_summary(result.client_id)
 
     return {"status": "ok"}
 
 # 客户端主动查询结果（可选）
+'''示例
+curl -X POST http://127.0.0.1:8000/receive_result \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_id": "client_001",
+    "server_url": "http://127.0.0.1:9001/approval",
+    "result": "yes"
+  }'
+'''
 @app.get("/get_results/{client_id}")
 def get_results(client_id: str):
     results = get_results_by_client(client_id)
