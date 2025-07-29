@@ -1,7 +1,7 @@
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 import requests, base64, io, os, zipfile
-from config import VAULT_ADDR, VAULT_TOKEN, CO_ADDR
+from config import VAULT_ADDR, VAULT_TOKEN
 import subprocess
 import tempfile
 # 调试包
@@ -128,12 +128,12 @@ class ApprovalResult(BaseModel):
 # ---------- API ----------
 '''示例
 # 加密生成数字信封
-curl -X POST http://localhost:5000/envelope/encrypt \
+curl -X POST http://localhost:5000/envelope/encrypt_file \
   -F "file=@bigfile.tar.gz" \
   -F "sym_key_name=my-sym-key" \
   --output digital_envelope.zip
 '''
-@app.post("/envelope/encrypt")
+@app.post("/envelope/encrypt_file")
 async def encrypt_envelope(
     file: UploadFile = File(...),
     sym_key_name: str = Form(...)
@@ -167,21 +167,36 @@ async def encrypt_envelope(
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
 
 '''示例
-curl -X POST http://localhost:5000/envelope/decrypt \
+curl -X POST http://localhost:5000/envelope/decrypt_key \
   -F "encrypted_key=@encrypted_key.txt" \
   -F "key_name=my-sym-key" \
-  -F "encrypted_file=@data.bin" \
-  -F "luks_header=@luks_header.bin" \
-  --output recovered_file.bin
+  --output plaintext_key.txt
 '''
-@app.post("/envelope/decrypt")
-async def decrypt_envelope(
+@app.post("/envelope/decrypt_key")
+async def decrypt_key(
     encrypted_key: UploadFile = File(...),        # 加密后的DEK
     key_name: str = Form(...),              # 根密钥名
-    encrypted_file: UploadFile = File(...),      # data.bin
-    luks_header: UploadFile = File(...),         # luks_header.bin
+    client_id: str = Form(...),
 ):
     try:
+        # === 检查审批结果 ===
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT result FROM approvals WHERE client_id = ?", (client_id,))
+        row = c.fetchone()
+        conn.close()
+
+        if not row:
+            return JSONResponse(status_code=200, content={
+                "status": "rejected",
+                "message": "未找到审批记录，无法解密"
+            })
+        if row[0].lower() != "yes":
+             return JSONResponse(status_code=200, content={
+                "status": "rejected",
+                "message": "审批未通过，无法解密"
+            })
+
         # 获取加密后的对称密钥
         encrypted_dek = (await encrypted_key.read()).decode()
 
@@ -191,44 +206,14 @@ async def decrypt_envelope(
         if resp.status_code != 200:
             raise HTTPException(status_code=500, detail=f"RSA解密失败: {resp.text}")
         plaintext_dek_b64 = resp.json()["data"]["plaintext"]
-        plaintext_dek = base64.b64decode(plaintext_dek_b64)
+        file_content = f"{plaintext_dek_b64}"
+        file_like = io.BytesIO(file_content.encode("utf-8"))
 
-        # 保存密文（LUKS 块设备）到临时文件
-        with tempfile.TemporaryDirectory() as tmpdir:
-            luks_data_path = os.path.join(tmpdir, "data.img")
-            luks_header_path = os.path.join(tmpdir, "header.bin")
-            plain_path = os.path.join(tmpdir, "recovered_output.bin")
-
-            # 提取文件实际大小和密文
-            encrypted_content = await encrypted_file.read()
-            # 提取前8字节为明文大小（大端）
-            file_size = int.from_bytes(encrypted_content[:8], byteorder="big")
-            # 提取真正的密文部分
-            ciphertext = encrypted_content[8:]
-            with open(luks_data_path, "wb") as f:
-                f.write(ciphertext)
-            with open(luks_header_path, "wb") as f:
-                f.write(await luks_header.read())
-
-            subprocess.run([
-                "cryptsetup", "open",
-                "--header", luks_header_path,
-                luks_data_path, "luks_tmp",
-                "--key-file", "-"
-            ], input=plaintext_dek, check=True)
-
-            subprocess.run(["dd", f"if=/dev/mapper/luks_tmp", f"of={plain_path}", "bs=1M"], check=True)
-
-            subprocess.run(["cryptsetup", "close", "luks_tmp"], check=True)
-
-            with open(plain_path, "rb") as f:
-                decrypted_data = f.read(file_size)
-
-        # 返回解密后的大文件
-        return StreamingResponse(io.BytesIO(decrypted_data),
-                                 media_type="application/octet-stream",
-                                 headers={"Content-Disposition": "attachment; filename=decrypted_data.bin"})
-
+        return StreamingResponse(
+            file_like,
+            media_type="text/plain",
+            headers={"Content-Disposition": "attachment; filename=plaintext_key.txt"}
+        )
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
