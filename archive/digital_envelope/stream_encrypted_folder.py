@@ -94,3 +94,4 @@ def decrypt_folder(encrypted_dir, output_dir):
             with open(out_file_path, "wb") as out_f:
                 for chunk in response.iter_content(chunk_size=8192):
                     out_f.write(chunk)
+                    

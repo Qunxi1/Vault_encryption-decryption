@@ -221,7 +221,7 @@ async def decrypt_key(
 
 # 审批服务器接收协调器发来的请求
 @app.post("/approval")
-async def receive_approval(
+def receive_approval(
     data: ApprovalContent,
 ):
     timestart = datetime.now().isoformat()
@@ -244,7 +244,7 @@ curl -X GET "http://localhost:8000/get_approvals?type=pending"
 '''
 # 接收前端的数据库查看请求
 @app.get("/get_approvals")
-async def get_approvals(type: Literal["pending", "approved"]):
+def get_approvals(type: Literal["pending", "approved"]):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     if type == "pending":
@@ -278,7 +278,7 @@ curl -X POST "http://localhost:8000/submit_result" \
 '''
 # 接收前端数据库审批请求
 @app.post("/submit_decision")
-async def submit_result(
+def submit_result(
     data: ApprovalResult,
     request: Request,
 ):
