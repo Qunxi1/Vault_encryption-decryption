@@ -54,9 +54,10 @@ def save_approval_result(client_id: str, server_url: str, result: str):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO approval_results (client_id, server_url, result)
-        VALUES (?, ?, ?)
-    ''', (client_id, server_url, result))
+        UPDATE approval_results
+        SET result = ?
+        WHERE client_id = ?
+    ''', (client_id, result))
     c.execute('''
         UPDATE approvals
         SET receive_count = receive_count + 1
@@ -158,8 +159,8 @@ async def start_approval(
         c.execute('''
             INSERT INTO approval_results (client_id, server_url)
             VALUES (?, ?)
-        ''', (req.client_id, url))
-        full_url = url + "/approval"
+        ''', (req.client_id, url + "/"))
+        full_url = url + "/approval/approval"
         background_tasks.add_task(send_approval, full_url, req.client_id, req.content, base_apiurl)
     conn.commit()
     conn.close()
