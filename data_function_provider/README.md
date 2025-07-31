@@ -19,6 +19,9 @@ python -m uvicorn main:app --reload --host 0.0.0.0 --port 9001
 
 ### 审批器( `/approval` )
 
+<details>
+<summary>点击展开</summary>
+
 #### 接收协调器(coordinator)发来的审批请求
 
 **功能**：此请求是协调器内部自动对审批器发送的请求，不需要人为请求。
@@ -61,7 +64,12 @@ curl -X POST "http://127.0.0.1:9001/approval/submit_decision" \
       }"
 ```
 
+</details>
+
 ### Vault加密解密服务( `/vault` )
+
+<details>
+<summary>点击展开</summary>
 
 #### `Luks` 加密文件
 
@@ -84,7 +92,8 @@ curl -X POST http://127.0.0.1:9001/vault/encrypt_file \
 curl -X POST http://127.0.0.1:9001/vault/decrypt_key \
   -F "encrypted_key=@digital_envelope/encrypted_key.txt" \
   -F "key_name=my-sym-key1" \
-  -F "client_id=client_003" \
+  -F "client_id=client_001" \
   --output plaintext_key.txt
 ```
 
+</details>
