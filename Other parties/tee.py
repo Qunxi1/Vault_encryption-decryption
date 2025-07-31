@@ -60,6 +60,12 @@ def luks_decrypt_data(encrypted_file_path: str, plaintext_key_path: str, output_
         traceback.print_exc()
         raise
 
+'''示例
+curl -X POST http://192.168.216.130:1000/decrypt_datakey \
+  -F "encrypted_key=@digital_envelope/encrypted_key.txt" \
+  -F "key_name=my-sym-key1" \
+  -F "client_id=client_001"
+'''
 #向数据/函数提供方请求解密密钥
 @app.post("/decrypt_datakey")
 async def request_decryption_key(
