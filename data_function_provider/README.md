@@ -43,9 +43,9 @@ curl -X POST http://127.0.0.1:9001/approval/approval \
 
 ```
 # 待审批
-curl -X GET "http://192.168.216.129:9001/approval/get_approvals?type=pending"
+curl -X GET "http://127.0.0.1:9001/approval/get_approvals?type=pending"
 # 已审批
-curl -X GET "http://192.168.216.129:9001/approval/get_approvals?type=approved"
+curl -X GET "http://127.0.0.1:9001/approval/get_approvals?type=approved"
 ```
 
 #### 接受前端审批请求
@@ -53,7 +53,7 @@ curl -X GET "http://192.168.216.129:9001/approval/get_approvals?type=approved"
 **功能**：前端人工进行审批后，将审批结果传给审批服务器，审批服务器本地保存审批结果信息后会主动传回协调器，再由协调器统计所有审批服务器的审批结果，并将整个任务的审批结果发送给客户端
 
 ```
-curl -X POST "http://27.0.0.1:9001/approval/submit_decision" \
+curl -X POST "http://127.0.0.1:9001/approval/submit_decision" \
   -H "Content-Type: application/json" \
   -d "{
         \"client_id\": \"client_001\",
@@ -81,7 +81,7 @@ curl -X POST http://127.0.0.1:9001/vault/encrypt_file \
 **功能** ：发起方审批完成并通过后，给 `tee` 发送计算请求， `tee` 会去指定位置拿取数据/函数密文数据，之后向数据/函数提供方发送 `data key` 解密请求，解密完成后发送明文密钥给 `tee` ，再由 `tee` 进行本地解密
 
 ```
-curl -X POST http://192.168.216.129:9001/vault/decrypt_key \
+curl -X POST http://127.0.0.1:9001/vault/decrypt_key \
   -F "encrypted_key=@digital_envelope/encrypted_key.txt" \
   -F "key_name=my-sym-key1" \
   -F "client_id=client_003" \
