@@ -57,7 +57,7 @@ def save_approval_result(client_id: str, server_url: str, result: str):
         UPDATE approval_results
         SET result = ?
         WHERE client_id = ?
-    ''', (client_id, result))
+    ''', (result, client_id))
     c.execute('''
         UPDATE approvals
         SET receive_count = receive_count + 1
@@ -138,8 +138,8 @@ curl -X POST http://127.0.0.1:8000/start_approval \
 '''
 @app.post("/start_approval")
 async def start_approval(
-	req: ApprovalRequest, 
-	background_tasks: BackgroundTasks,
+    req: ApprovalRequest, 
+    background_tasks: BackgroundTasks,
     request: Request,
 ):
     # 往主表插入任务信息
@@ -179,7 +179,7 @@ curl -X POST http://192.168.216.128:5000/receive_result \
 # 接收审批服务器返回的结果
 @app.post("/receive_result")
 async def receive_result(
-	result: ApprovalResult,
+    result: ApprovalResult,
 ):
     save_approval_result(result.client_id, result.server_url, result.result)
 
