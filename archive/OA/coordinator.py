@@ -57,7 +57,7 @@ def save_approval_result(client_id: str, server_url: str, result: str):
         UPDATE approval_results
         SET result = ?
         WHERE client_id = ?
-    ''', (client_id, result))
+    ''', (result, client_id))
     c.execute('''
         UPDATE approvals
         SET receive_count = receive_count + 1
