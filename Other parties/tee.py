@@ -1,5 +1,5 @@
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
-import os, base64, requests
+import os, base64, requests, zipfile
 import subprocess
 import tempfile
 import traceback
@@ -9,24 +9,27 @@ app = FastAPI()
 VAULT_PROVIDER_URL = "http://192.168.216.129:9001/vault/decrypt_key"
 
 # 使用本地明文 DEK 对加密数据进行 LUKS 解密
-def luks_decrypt_data(encrypted_file_path: str, plaintext_key_path: str, output_path: str):
+def luks_decrypt_data(encrypted_zip_path: str, plaintext_key_path: str, output_path: str):
     try:
         # 读取明文 DEK
         with open(plaintext_key_path, "rb") as f:
             plaintext_dek = f.read()
         plaintext_dek = base64.b64decode(plaintext_dek)
+        # 打开加密压缩包并提取相应文件
+        with zipfile.ZipFile(encrypted_zip_path, "r") as z:   
+            # 读取密文文件
+            with z.open("data.bin") as f:
+                encrypted_content = f.read()
+            # 读取 luks_header
+            with z.open("luks_header.bin") as f:
+                luks_header = f.read()
+
         # 保存密文（LUKS 块设备）到临时文件
         with tempfile.TemporaryDirectory() as tmpdir:
             luks_data_path = os.path.join(tmpdir, "data.img")
             luks_header_path = os.path.join(tmpdir, "header.bin")
             plain_path = os.path.join(tmpdir, "recovered_output.bin")
 
-            # 读取密文文件
-            with open(encrypted_file_path, "rb") as f:
-                encrypted_content = f.read()
-            # 读取Luks header
-            with open("digital_envelope/luks_header.bin", "rb") as f:
-                luks_header = f.read()
             # 提取文件实际大小的密文
             # 提取前8字节为明文大小（大端）
             file_size = int.from_bytes(encrypted_content[:8], byteorder="big")
