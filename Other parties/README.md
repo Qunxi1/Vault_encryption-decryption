@@ -93,12 +93,11 @@ curl -X POST http://127.0.0.1:1000/decrypt_datakey \
 
 ```
 '''
-encrypted_file_path:密文文件路径
-plaintext_key_path：明文密钥路径
-output_path：解密后文件的输出路径
-目前这只是简单的解密函数，因为后续密文数据都是存在zip压缩包中，因而后续的密文文件和代码中写死的 luks_header 等路径的参数都会进行修改
+encrypted_zip_path: 密文文件zip包的路径
+plaintext_key_path: 明文密钥路径
+output_path: 解密后文件的输出路径
 '''
-luks_decrypt_data(encrypted_file_path, plaintext_key_path, output_path)
+luks_decrypt_data(encrypted_zip_path, plaintext_key_path, output_path)
 ```
 
 </details>
